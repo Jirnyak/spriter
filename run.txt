@@ -1,0 +1,3 @@
+cd /Users/jirnyak/Mirror/spriter 
+
+python3.10 city_map_generator.py pop_500.json && python3.10 city_map_generator.py pop_1500.json && python3.10 city_map_generator.py pop_4000.json && python3.10 city_map_generator.py pop_50000.json && python3.10 city_map_generator.py pop_100000.json
