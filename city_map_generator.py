@@ -36,7 +36,9 @@ class Params:
 
 def calculate_size_from_population(population: int) -> Tuple[int, int]:
     """Calculate map size based on population. Returns roughly square dimensions."""
-    base = int((population ** (1/3)) * 15)
+    # Medieval walled cities: pop^0.4 for constrained, dense growth
+    # Walls limit expansion, forcing higher density than modern cities
+    base = int((population ** 0.4) * 35)
     base = max(400, min(2048, base))
     return base, base
 
@@ -189,24 +191,105 @@ def generate_main_streets(params: Params, draw: ImageDraw.ImageDraw, grid: List[
     gh = len(grid)
     cx = gw // 2
     cy = gh // 2
+    pop = params.population
 
     main_width = 1
     
-    # Vertical main street through center with small organic variation
-    x = cx
-    for y in range(gh):
-        if random.random() < 0.08:  # Small fluctuation
-            x = clamp(x + random.choice([-1, 1]), cx - 2, cx + 2)
-        draw_rect(draw, cell, x - main_width // 2, y, main_width, 1, (150, 150, 150))
-        mark_rect(grid, x - main_width // 2, y, main_width, 1, 1)
+    # No main streets for very small cities without walls
+    if pop < 1000:
+        return
     
-    # Horizontal main street through center with small organic variation
-    y = cy
-    for x in range(gw):
-        if random.random() < 0.08:  # Small fluctuation
-            y = clamp(y + random.choice([-1, 1]), cy - 2, cy + 2)
-        draw_rect(draw, cell, x, y - main_width // 2, 1, main_width, (150, 150, 150))
-        mark_rect(grid, x, y - main_width // 2, 1, main_width, 1)
+    # Use SAME random calculations as wall generation to ensure alignment
+    # Save random state
+    state = random.getstate()
+    random.seed(params.seed)  # Reset to same seed as walls
+    
+    # Calculate wall gate positions - MUST match wall generation exactly
+    if 1000 <= pop < 10000:
+        radius = min(gw, gh) // 4
+        segments = 6
+    elif 10000 <= pop <= 100000:
+        # For outer wall in large cities
+        radius = min(gw, gh) // 2 - 5
+        segments = 8
+    else:
+        return
+    
+    # Generate wall polygon nodes - SAME algorithm as generate_polygon_wall
+    angle_step = 2 * math.pi / segments
+    nodes = []
+    for i in range(segments):
+        angle = i * angle_step
+        if random.random() < 0.1:
+            angle += random.uniform(-0.1, 0.1)
+        r = radius
+        if random.random() < 0.08:
+            r += random.randint(-1, 1)
+        x = int(cx + r * math.cos(angle))
+        y = int(cy + r * math.sin(angle))
+        nodes.append((x, y))
+    
+    # Restore random state for subsequent generation
+    random.setstate(state)
+    
+    # Calculate gate positions (midpoints between nodes)
+    gates = []
+    for i in range(len(nodes)):
+        n1 = nodes[i]
+        n2 = nodes[(i + 1) % len(nodes)]
+        gate_x = (n1[0] + n2[0]) // 2
+        gate_y = (n1[1] + n2[1]) // 2
+        gates.append((gate_x, gate_y))
+    
+    # Select 4 gates (roughly cardinal directions)
+    if len(gates) >= 4:
+        selected_gates = [
+            gates[0],
+            gates[len(gates) // 4],
+            gates[len(gates) // 2],
+            gates[3 * len(gates) // 4]
+        ]
+    else:
+        selected_gates = gates
+    
+    # Draw streets through gates: from edge through gate through center to opposite edge
+    for gate_x, gate_y in selected_gates:
+        # Direction from center to gate (outward)
+        dx_out = gate_x - cx
+        dy_out = gate_y - cy
+        dist = math.sqrt(dx_out**2 + dy_out**2)
+        if dist < 1:
+            continue
+        
+        # Normalize direction
+        dx_out /= dist
+        dy_out /= dist
+        
+        # Extend from edge to edge through center
+        max_dist = max(gw, gh)
+        
+        for d in range(-max_dist, max_dist):
+            px = cx + dx_out * d
+            py = cy + dy_out * d
+            
+            ix = int(px)
+            iy = int(py)
+            
+            # Check bounds
+            if ix < 1 or ix >= gw - 1 or iy < 1 or iy >= gh - 1:
+                continue
+            
+            # Small organic variation
+            if random.random() < 0.08 and abs(d) > 5:
+                ix += random.choice([-1, 0, 1])
+                iy += random.choice([-1, 0, 1])
+                ix = clamp(ix, 1, gw - 2)
+                iy = clamp(iy, 1, gh - 2)
+            
+            draw_rect(draw, cell, ix - main_width // 2, iy - main_width // 2, 
+                     main_width, main_width, (150, 150, 150))
+            mark_rect(grid, ix - main_width // 2, iy - main_width // 2, 
+                     main_width, main_width, 1)
 
 
 def generate_central_square(params: Params, draw: ImageDraw.ImageDraw, grid: List[List[int]], cell: int) -> None:
@@ -223,11 +306,10 @@ def generate_street_network(params: Params, draw: ImageDraw.ImageDraw, grid: Lis
     gw = len(grid[0])
     gh = len(grid)
 
-    # Use sigmoid function for smooth growth that naturally levels off
-    # sigmoid(x) = L / (1 + e^(-k(x-x0)))
+    # Sigmoid function for smooth growth
+    # Max=20 for adequate coverage in large cities
     pop = params.population
-    # Normalize population to sigmoid range
-    x = math.log10(pop + 1)  # log scale for better distribution
+    x = math.log10(pop + 1)
     # Sigmoid parameters: max=20, steepness=1.5, midpoint=3.5
     nodes_count = int(6 + 14 / (1 + math.exp(-1.5 * (x - 3.5))))
     
@@ -323,8 +405,9 @@ def generate_houses(params: Params, draw: ImageDraw.ImageDraw, grid: List[List[i
     gw = len(grid[0])
     gh = len(grid)
 
-    target = max(50, params.population // 40)
-    max_attempts = target * 15
+    # Houses scale with population^0.8
+    target = max(30, int(params.population ** 0.8))
+    max_attempts = target * 20
 
     min_size = clamp(2, 2, 4)
     max_size = clamp(4 - params.population // 20000, 2, 6)
