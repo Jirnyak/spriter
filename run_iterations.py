@@ -35,7 +35,10 @@ def main():
             iteration += 1
             
             # Grow one street branch
-            city.grow_street_branch()
+            new_edge = city.grow_street_branch()
+            if new_edge is not None:
+                for _ in range(10):
+                    city.try_place_house(edge=new_edge)
             
             # Try to place houses along the new street until no more fit
             consecutive_failures = 0

@@ -228,10 +228,10 @@ class GrapeCity:
                         if gx + 1 < self.grid_w:
                             self.grid[gy][gx + 1] = 1
     
-    def grow_street_branch(self) -> bool:
-        """Grow one street branch from existing network."""
+    def grow_street_branch(self) -> Tuple[int, int] | None:
+        """Grow one street branch from existing network. Returns new edge if created."""
         if len(self.street_nodes) < 5:
-            return False
+            return None
         
         # Simple mycelium: pick random node (excluding first 5 main road nodes)
         available = list(range(5, len(self.street_nodes)))
@@ -270,7 +270,8 @@ class GrapeCity:
             new_node = StreetNode(new_x, new_y, False)
             new_id = len(self.street_nodes)
             self.street_nodes.append(new_node)
-            self.street_edges.append((parent_id, new_id))
+            new_edge = (parent_id, new_id)
+            self.street_edges.append(new_edge)
             
             # Mark street and remove any overlapped houses
             removed_count = self.mark_street_and_remove_houses(parent.x, parent.y, new_x, new_y)
@@ -278,6 +279,10 @@ class GrapeCity:
             # Compensate by creating same number of new houses
             for _ in range(removed_count):
                 self.try_place_house()
+
+            # Densify along this new segment
+            for _ in range(10):
+                self.try_place_house(edge=new_edge)
             
             # Occasional loop connections
             if random.random() < 0.15:
@@ -287,19 +292,23 @@ class GrapeCity:
                          and math.sqrt((n.x - new_x)**2 + (n.y - new_y)**2) < 25]
                 if nearby:
                     connect_id = random.choice(nearby)
-                    self.street_edges.append((new_id, connect_id))
+                    loop_edge = (new_id, connect_id)
+                    self.street_edges.append(loop_edge)
                     conn_node = self.street_nodes[connect_id]
                     # Mark this connection and remove overlapped houses
                     removed = self.mark_street_and_remove_houses(new_x, new_y, conn_node.x, conn_node.y)
                     # Compensate
                     for _ in range(removed):
                         self.try_place_house()
+                    # Densify along this loop segment
+                    for _ in range(8):
+                        self.try_place_house(edge=loop_edge)
             
-            return True
+            return new_edge
         
-        return False
+        return None
     
-    def try_place_house(self) -> bool:
+    def try_place_house(self, edge: Tuple[int, int] | None = None) -> bool:
         """Try to place one house near a street. Returns True if successful."""
         if len(self.street_edges) < 1:
             return False
@@ -317,8 +326,12 @@ class GrapeCity:
         if not regular_edges:
             return False
         
-        # Pick a random regular street segment (not main road)
-        edge = random.choice(regular_edges)
+        # Pick a regular street segment (not main road)
+        if edge is None:
+            edge = random.choice(regular_edges)
+        elif edge not in regular_edges:
+            return False
+
         n1 = self.street_nodes[edge[0]]
         n2 = self.street_nodes[edge[1]]
         
@@ -328,7 +341,7 @@ class GrapeCity:
         street_y = n1.y + (n2.y - n1.y) * t
         
         # Try to place house near this point on the street
-        for _ in range(25):  # More attempts to find valid placement
+        for _ in range(60):  # More attempts to find valid placement
             # Place on either side of the street
             side = random.choice([-1, 1])
             
@@ -344,7 +357,7 @@ class GrapeCity:
             perp_y = dx / length
             
             # Place house at perpendicular distance from street - closer for density
-            distance = random.randint(3, 7)
+            distance = random.randint(2, 4)
             x = int(street_x + perp_x * distance * side)
             y = int(street_y + perp_y * distance * side)
             
@@ -374,20 +387,6 @@ class GrapeCity:
                         break
                 if not free:
                     break
-            
-            # Also check 1px padding around house for street collision only
-            if free:
-                for yy in range(y - 1, y + h + 1):
-                    if yy < 0 or yy >= self.grid_h:
-                        continue
-                    for xx in range(x - 1, x + w + 1):
-                        if xx < 0 or xx >= self.grid_w:
-                            continue
-                        if self.grid[yy][xx] == 1:  # Street cell in padding zone
-                            free = False
-                            break
-                    if not free:
-                        break
             
             if free:
                 # Mark grid
@@ -442,12 +441,13 @@ class GrapeCity:
             iteration += 1
             
             # Grow one street branch
-            if self.grow_street_branch():
+            new_edge = self.grow_street_branch()
+            if new_edge is not None:
                 streets_added += 1
             
             # Try to place houses along the new street until no more fit
             consecutive_failures = 0
-            max_failures = 50  # Try 50 times before growing new street
+            max_failures = 120  # Try more times before growing new street
             
             while consecutive_failures < max_failures and houses_added < target_houses:
                 if self.try_place_house():
