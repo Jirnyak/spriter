@@ -1,1 +1,4 @@
 /.DS_Store
+downloads/
+audio_downloads/
+__pycache__/
